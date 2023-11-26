@@ -84,9 +84,7 @@ def savitzky_golay(y, window_size, order, deriv=0, rate=1):
     return np.convolve( m[::-1], y, mode='valid')
 
 def convert_angle(angle):
-    if angle < 0:
-        return int(np.round(180 + 180 * angle / (2*np.pi)))
-    return int(np.round(180 * angle / (2*np.pi)))
+    return int(np.round(90 * (angle + np.pi) / np.pi))
 
 def entity_mapping(type: DroneSemanticSensor.TypeEntity):
     if type == DroneSemanticSensor.TypeEntity.WALL:
@@ -147,49 +145,65 @@ def instantiate_entity(cl, v):
     return obj
 
 class MyDroneEval(DroneAbstract):
-    class Waypoint:
-        x : float
-        y : float
-        forward : list
-        backward : list
-        directions : np.array
+    class RecursiveGrid:
+        cells: pd.DataFrame
+        
+        def __init__(self) -> None:
+            self.cells = pd.DataFrame({"ulim": [], "llim": [], "dlim": [], "rlim": [], "waypoint_x": [], "waypoint_y": []})
+            
+        def update(self, gps_coord, compass_angle, rays):
+            rays = np.roll(rays[:-1], compass_angle)
+            lims = [0]*4    # limit in the 4 directions
+            already_set_limits = self.cells.loc[:, "ulim":"rlim"] - np.array([gps_coord[1], gps_coord[0], gps_coord[1], gps_coord[0]])
 
-        def __init__(self, pos, ):
-            self.x, self.y = pos
-            self.forward = []
-            self.backward = []
-            self.directions = np.zeros((180,))
+            up = rays[0:90]
+            up_wall = up * np.sin(np.pi*np.arange(90)/180)
+            up_lim = min(0.75*up_wall.max(), already_set_limits.loc[already_set_limits["dlim"] > 0, "dlim"].min())
+            lims[0] = gps_coord[1] + up_lim
+
+            left = rays[45:135]
+            left_wall = left * np.sin(np.pi*np.arange(90)/180)
+            left_lim = min(0.75*left_wall.max(), -already_set_limits.loc[already_set_limits["rlim"] < 0, "rlim"].max()) # -max(x) = min(-x)
+            lims[1] = gps_coord[0] - left_lim
+
+            down = rays[90:]
+            down_wall = down * np.sin(np.pi*np.arange(90)/180)
+            down_lim = min(0.75*down_wall.max(), -already_set_limits.loc[already_set_limits["ulim"] < 0, "ulim"].max())
+            lims[2] = gps_coord[1] - down_lim
+
+            right = np.concatenate((rays[-45:], rays[:45]))
+            right_wall = right * np.sin(np.pi*np.arange(90)/180)
+            right_lim = min(0.75*right_wall.max(), already_set_limits.loc[already_set_limits["llim"] > 0, "llim"].min())
+            lims[3] = gps_coord[0] + right_lim
             
-        def distance(self, pos):
-            return np.sqrt((self.x - pos[0])**2 + (self.y - pos[1])**2)
+            lims += [(lims[0] + lims[2])/2, (lims[1] + lims[3])/2]
+            self.cells.loc[-1] = lims
+            self.cells.index += 1
         
-        def orientation(self, pos):
-            return np.arctan((self.y - pos[1]) / (self.x - pos[0])) if np.abs(self.x - pos[0]) >= 1e-3 else 0
+        def __contains__(self, point):
+            return np.any((self.cells['llim'] < point[0]) & (point[0] <= self.cells['rlim']) & 
+                          (self.cells['dlim'] < point[1]) & (point[1] <= self.cells['ulim']))
         
-        def add(self, other):
-            self.forward.append(other)
-            other.backward.append(self)
-            
-        def add_directions(self, directions):
-            directions = np.delete(directions, np.isin(directions, np.where(self.directions == -1)[0]))
-            self.directions[directions] = 1
-        
-        def choose(self, p):
-            dirs = np.where(self.directions > 0)[0]
-            if len(dirs) == 0:
-                dirs = np.where(self.directions == 0)[0]
-                return random.choice(dirs)
-            d = random.choices(dirs, weights=self.directions[dirs])[0]
-            self.directions *= p
-            self.directions[d] /= p**2
-            return d
-        
-        def delete(self, dir):
-            # Redistribute the weight among all the other directions
-            n = np.sum(self.directions > 0) - 1
-            if n > 0:
-                self.directions[self.directions > 0] += self.directions[dir]/n
-            self.directions[dir] = -1
+    class ReachWrapper:
+        x: float = np.nan
+        y: float = np.nan
+
+        def __init__(self, obj) -> None:
+            try:
+                self.x = obj.x
+                self.y = obj.y
+            except AttributeError:
+                self.x = obj[0]
+                self.y = obj[1]
+
+        def distance(self, other):
+            try:
+                x = other.x
+                y = other.y
+            except AttributeError:
+                x = other[0]
+                y = other[1]
+            return (self.x - x)**2 + (self.y - y)
             
     class States(Enum):
         SEARCHING = 0
@@ -244,18 +258,12 @@ class MyDroneEval(DroneAbstract):
         self.rotation = 0
         self.grasper = 0
 
-        self.v_n_sq = 0
-        self.alpha = 0
-        self.w = 0
 
-        self.waypoint = None
-        self.c = 0  # only for debug
         random.seed(identifier)
-        self.p = random.randint(1, 10) / 100
+        self.grid = MyDroneEval.RecursiveGrid()
         self.state = MyDroneEval.States.SEARCHING
-        self.collision = False
         self.body = None
-        self.following = None
+        self.following = MyDroneEval.ReachWrapper((np.inf, np.inf))
         self.poi = pd.DataFrame(np.zeros((1, 3)), columns=["Obj", "Id", "Type"], dtype=np.float32)
         self.ids = {MyDroneEval.Wall: 0, MyDroneEval.Wounded: 0, MyDroneEval.RescueZone: 0, MyDroneEval.NoGPSZone: 0, MyDroneEval.NoCommZone: 0}
     
@@ -276,7 +284,7 @@ class MyDroneEval(DroneAbstract):
         self.estimate_objects()
         self.lidar_val = savitzky_golay(self.lidar_values(), 21, 3)
         
-        if self.lidar_val[90-22:90+22].min() < d:  # FOV: 180 degrees
+        if self.lidar_val[90-22:90+22].min() < d:  # FOV: 90 degrees
             self.collision = True
             self.solve_collision()
         else:
@@ -287,7 +295,7 @@ class MyDroneEval(DroneAbstract):
                 #     self.reach()
             elif self.state == MyDroneEval.States.FOUND_BODY:
                 self.reach(self.body)
-            elif self.state == MyDroneEval.States.FOUND_BODY:
+            elif self.state == MyDroneEval.States.CARRYING_BODY:
                 rescue = self.poi[self.poi["Type"] == MyDroneEval.RescueZone]
                 self.reach(rescue["Obj"])
 
@@ -318,9 +326,13 @@ class MyDroneEval(DroneAbstract):
         self.rotation = w
     
     def search(self):
+        """Logic for determining the next goal position in the map"""
         gps = self.measured_gps_position()
-        compass_180 = convert_angle(self.measured_compass_angle())
+        compass = convert_angle(self.measured_compass_angle()) # Returns values in [-pi, pi]
         wounded = self.poi[self.poi["Type"]==MyDroneEval.Wounded]
+        # If a new cell can be created and its middle point can be assigned add it to the DataFrame
+        if self.following.distance(gps) < 1e-1:
+            self.grid.update(gps, compass, self.lidar_val)
         if not wounded.empty:
             # A person to rescue is found in the bank
             wounded = wounded[wounded['Obj'].apply(lambda p: p.distance(gps)).argmin()]
@@ -329,48 +341,26 @@ class MyDroneEval(DroneAbstract):
             self.angle_stop = 2*np.arctan((wounded.y - gps[1]) / (wounded.x - gps[0]))
             self.rotation = np.sign(self.angle_stop)
         else:
-            # Searching for people
-            if self.waypoint is None:
-                self.waypoint = MyDroneEval.Waypoint(gps)
-                self.following = self.waypoint
+            # Check with the cells with neighboring ids and move to unseen scenarios
+            rays = np.roll(self.lidar_val[:-1], 180-compass)
+            q80 = np.quantile(self.lidar_val, 0.8)
+            guess = gps + (rays * np.vstack([np.cos(np.arange(0, 2*np.pi, 2*np.pi/180)),
+                                                        np.sin(np.arange(0, 2*np.pi, 2*np.pi/180))])).T
+            guess = guess[rays > q80]
+            guess = np.apply_along_axis(lambda row: row if row not in self.grid else np.array([np.nan, np.nan]), 1, guess)
+            guess = guess[(~np.isnan(guess)).any(axis=1)]
 
-            # Add new waypoint if needed
-            corner = np.abs(savitzky_golay(self.lidar_val, 11, 3, deriv=1))
-            # if corner.max() > 15 and self.waypoint.distance(gps) > 15:
-                # Extract one of the directions of rapid change for the lidar
-                # i = np.where(corner > 0.80 * corner.max())[0]
-                # Compute the lidar ray relative to the actual waypoint
-                # waypoint_alpha = convert_angle(2*self.waypoint.orientation(gps))
-                # if compass_180 - waypoint_alpha < 90:
-                #     waypoint_alpha = 90 + compass_180 - waypoint_alpha
-                # else:
-                #     waypoint_alpha = 90 + 180 - (compass_180 - waypoint_alpha)
-                # if 0.8 < self.waypoint.distance(gps) / self.lidar_val[waypoint_alpha] < 1:
-                # w = self.waypoint
-                # self.waypoint = MyDroneEval.Waypoint(gps)
-                # w.add(self.waypoint)
-                
-
-                # express the angles sp that they start from the horizontal angle at global 0 degrees
-                # formula to pass from global reference system to lidar reference system:
-                # alpha_GRS = alpha_LRS + alpha_GRS2LRS = alpha_LRS + compass_180 - 90
-                # alpha = np.array([a - 90 + compass_180 if a - 90 + compass_180 < 180 else a - 90 + compass_180 - 180 for a in i]) # lidar first position is -pi
-                # self.waypoint.add_directions(alpha)
-
-            # If we reached the destination find another one
-            if 1 < self.following.distance(gps) < 10:
-                angle = self.waypoint.choose(1 + self.p)
-                angle = np.array([np.cos(angle), np.sin(angle)])
-                r = np.random.rand(1,) * self.lidar_val.min()
-                self.following = MyDroneEval.Waypoint(gps + r*angle)
+            if guess.size == 0:
+                self.following = MyDroneEval.ReachWrapper(self.grid.cells.loc[1, ["waypoint_x", "waypoint_y"]])
+            else:
+                self.following = MyDroneEval.ReachWrapper(guess[np.random.choice(guess.shape[0])])
         
         self.reach()
         
     
     def reach(self):
-        """Reaches the entity passed as parameter. Whether it is a body, the recovery center or other"""
+        """Reaches the entity defined in self.following."""
         gps = self.measured_gps_position()
-        # compass = self.measured_compass_angle()
         
         alpha = np.arctan2((self.following.y - gps[1]) , (self.following.x - gps[0]))
 
