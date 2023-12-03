@@ -84,9 +84,8 @@ def savitzky_golay(y, window_size, order, deriv=0, rate=1):
     y = np.concatenate((firstvals, y, lastvals))
     return np.convolve( m[::-1], y, mode='valid')
 
-def mod_sigmoid(x, increase=0.01, delay=10):
-	assert increase >= 0
-	return 1 / (1+np.exp(-increase*(x - delay)))
+def gomperz(x, a=0.008, b=30, rate=0.1) -> float:
+    return 1 - a*np.exp(-np.exp(-rate*(x-b)))
 
 def convert_angle(angle):
     if angle >= 0:
@@ -97,7 +96,8 @@ def convert_angle(angle):
 def clean_material_following(rays, semantic):
     for s in semantic:
         if s.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON:
-            rays[convert_angle(s.angle)-90] = np.inf
+            body_ray = (convert_angle(s.angle)+90)%180
+            rays[body_ray-5:body_ray+5] = np.inf
     return rays
 
 
@@ -112,35 +112,45 @@ class MyDroneEval(DroneAbstract):
         def update(self, gps_coord, compass_angle, lidar):
             rays = np.roll(lidar[:-1], 90 + compass_angle)
             lims = [0]*4    # limit in the 4 directions
-            intercepting_mask = ((self.cells["llim"] > lims[3]) & (self.cells["dlim"] > lims[0]))  | \
-                                ((self.cells["llim"] > lims[3]) & (self.cells["ulim"] < lims[2]))  | \
-                                ((self.cells["rlim"] < lims[1]) & (self.cells["dlim"] > lims[0]))  | \
-                                ((self.cells["rlim"] < lims[1]) & (self.cells["dlim"] < lims[2]))
-            intercepting_cells = self.cells[~intercepting_mask]
+            
+            
+            
+            
+            
             # vertical_limits = self.cells[(self.cells["llim"] < gps_coord[0]) & (gps_coord[0] < self.cells["rlim"])] # We assume being in an unknown cell
 
             up = rays[0:90]
             up_wall = up * np.sin(np.pi*np.arange(90)/180)
             lims[0] = gps_coord[1] + 0.75*up_wall.max()
-            lims[0] = min(lims[0], intercepting_cells.loc[intercepting_cells["dlim"] > gps_coord[1], "dlim"].min())
+            
 
             down = rays[90:]
             down_wall = down * np.sin(np.pi*np.arange(90)/180)
             lims[2] = gps_coord[1] - 0.75*down_wall.max()
-            lims[2] = max(lims[2], intercepting_cells.loc[intercepting_cells["ulim"] < gps_coord[1], "ulim"].max())
+            
 
             # horizontal_limits = self.cells[(self.cells["dlim"] < gps_coord[1]) & (gps_coord[1] < self.cells["ulim"])]
 
             left = rays[45:135]
             left_wall = left * np.sin(np.pi*np.arange(90)/180)
             lims[1] = gps_coord[0] - 0.75*left_wall.max()
-            lims[1] = max(lims[1], intercepting_cells.loc[intercepting_cells["rlim"] < gps_coord[0], "rlim"].max())
+            
 
             right = np.concatenate((rays[-45:], rays[:45]))
             right_wall = right * np.sin(np.pi*np.arange(90)/180)
             lims[3] = gps_coord[0] + 0.75*right_wall.max()
-            lims[3] = min(lims[3], intercepting_cells.loc[intercepting_cells["llim"] > gps_coord[0], "llim"].min())
 
+            # Check the intersections with the other cells
+            
+            intercepting_mask = ((self.cells["llim"] > lims[3]) & (self.cells["dlim"] > lims[0]))  | \
+                    ((self.cells["llim"] > lims[3]) & (self.cells["ulim"] < lims[2]))  | \
+                    ((self.cells["rlim"] < lims[1]) & (self.cells["dlim"] > lims[0]))  | \
+                    ((self.cells["rlim"] < lims[1]) & (self.cells["dlim"] < lims[2]))
+            intercepting_cells = self.cells[~intercepting_mask]
+            lims[0] = min(lims[0], intercepting_cells.loc[intercepting_cells["dlim"] > gps_coord[1], "dlim"].min())
+            lims[1] = max(lims[1], intercepting_cells.loc[intercepting_cells["rlim"] < gps_coord[0], "rlim"].max())
+            lims[2] = max(lims[2], intercepting_cells.loc[intercepting_cells["ulim"] < gps_coord[1], "ulim"].max())
+            lims[3] = min(lims[3], intercepting_cells.loc[intercepting_cells["llim"] > gps_coord[0], "llim"].min())
 
             lims += [*gps_coord]
             self.cells.loc[-1] = lims
@@ -205,7 +215,7 @@ class MyDroneEval(DroneAbstract):
         self.lateral = 0
         self.rotation = 0
         self.grasper = 0
-        self.inertia = 0
+        self.last_ts = 0
 
 
         random.seed(identifier)
@@ -229,18 +239,19 @@ class MyDroneEval(DroneAbstract):
         # TODO : put this in a thread
         # Check if there is a visible body or the rescue center
         semantic = self.semantic_values()
+        gps = self.measured_gps_position()
         bodies = [ray for ray in semantic if ray.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON and not ray.grasped]
-        if len(bodies) > 0 and self.state == MyDroneEval.States.SEARCHING:
+        if len(bodies) > 0 and self.state != MyDroneEval.States.CARRYING_BODY:
             compass = self.measured_compass_angle()
             positions = [(np.cos(body.angle - compass)*body.distance, np.sin(body.angle - compass)*body.distance) for body in bodies]
             x, y = zip(*positions)
             x, y = sum(x) / len(x), sum(y) / len(y)
-            self.following = MyDroneEval.ReachWrapper((x, y))
+            self.following = MyDroneEval.ReachWrapper((gps[0]+x, gps[1]+y))
             self.state = MyDroneEval.States.FOUND_BODY
+            self.last_ts = 0
 
         # Compute its position and set the following attribute
         self.lidar_val = savitzky_golay(self.lidar_values(), 21, 3)
-        self.inertia -= 0.45*self.odometer_values()[0]
         
         if clean_material_following(self.lidar_val, semantic)[90-22:90+22].min() < d:  # FOV: 90 degrees
             self.solve_collision()
@@ -251,7 +262,8 @@ class MyDroneEval(DroneAbstract):
                 # else:
                 #     self.reach()
             elif self.state == MyDroneEval.States.FOUND_BODY:
-                if self.following.distance(self.measured_gps_position()) < l:
+                print("AOOOOOOOOOOOOOO", self.following.distance(self.measured_gps_position()))
+                if self.following.distance(self.measured_gps_position()) < 30:
                     self.grasper = 1
                 self.reach()
             elif self.state == MyDroneEval.States.CARRYING_BODY:
@@ -311,29 +323,38 @@ class MyDroneEval(DroneAbstract):
             else:
                 self.following = MyDroneEval.ReachWrapper(guess[np.random.choice(guess.shape[0])])
                 print([self.following.x, self.following.y])
+            self.last_ts = 0
         
         self.reach()
         
     
     def reach(self):
         """Reaches the entity defined in self.following."""
+        # gps = self.measured_gps_position()
+        # compass = self.measured_compass_angle()
+        # dist = self.following.distance(gps)
+        
+        # alpha = np.arctan2(self.following.y - gps[1], self.following.x - gps[0]) # - compass
+
+        # R = l / (1 - np.sin(alpha))
+        # N = max(11, np.pi / (1e-2 + math.asin(l / (2*R))))
+        # w = (np.pi/2 - alpha) / N
+        
+        # delta_x = self.odometer_values()[0]
+        # acc = max(-1, min(1, 4*np.sin(np.pi / N)*R - 2*delta_x))
+        
+        # self.forward = acc*np.cos(w)
+        # self.lateral = acc*np.sin(w)
+        # self.rotation = w if abs(alpha - compass) >= 0.5 else 0
+        # self.inertia[0] += self.forward
+        # self.inertia[1] += self.lateral
         gps = self.measured_gps_position()
         compass = self.measured_compass_angle()
-        dist = self.following.distance(gps)
-        
-        alpha = np.arctan2(self.following.y - gps[1], self.following.x - gps[0]) # - compass
+        # Obtain the angle to turn from current orientation
+        alpha = np.arctan2(self.following.y - gps[1], self.following.x - gps[0]) - compass
 
-        R = l / (1 - np.sin(alpha))
-        N = max(11, np.pi / (1e-2 + math.asin(l / (2*R))))
-        w = (np.pi/2 - alpha) / N
-        
-        delta_x = self.odometer_values()[0]
-        acc = max(-1, min(1, 4*np.sin(np.pi / N)*R - 2*delta_x))
-        
-        self.forward = (2*mod_sigmoid(dist, delay=(self.inertia+acc*np.cos(w))*dist/2.2)-1)*acc*np.cos(w)
-        self.lateral = (2*mod_sigmoid(dist, delay=(self.inertia+acc*np.sin(w))*dist/2.2)-1)*acc*np.sin(w)
-        self.rotation = w if abs(alpha - compass) >= 0.5 else 0
-        self.inertia += self.forward + self.lateral
-    
-            
-            
+        rot = min(np.exp(abs(alpha) / 90), 1)
+        self.rotation = np.sign(alpha)*rot*gomperz(self.last_ts)
+        self.forward = 0.5 if abs(rot) < 0.1 else 1
+        self.lateral = np.sign(alpha)*rot**2
+        self.last_ts += 1
