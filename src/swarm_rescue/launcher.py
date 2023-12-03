@@ -72,7 +72,7 @@ class Launcher:
         eval_config = EvalConfig(map_type=MyMapMedium02, zones_config=zones_config, nb_rounds=1, config_weight=1)
         self.eval_plan.add(eval_config=eval_config)
 
-        self.number_drones = None
+        self.number_drones = 7
         self.time_step_limit = None
         self.real_time_limit = None
         self.number_wounded_persons = None
