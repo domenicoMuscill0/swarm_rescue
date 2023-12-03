@@ -84,7 +84,7 @@ def savitzky_golay(y, window_size, order, deriv=0, rate=1):
     y = np.concatenate((firstvals, y, lastvals))
     return np.convolve( m[::-1], y, mode='valid')
 
-def gomperz(x, a=0.008, b=30, rate=0.1) -> float:
+def gomperz(x, a=0.008, b=20, rate=0.1) -> float:
     return 1 - a*np.exp(-np.exp(-rate*(x-b)))
 
 def convert_angle(angle):
@@ -243,7 +243,7 @@ class MyDroneEval(DroneAbstract):
         bodies = [ray for ray in semantic if ray.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON and not ray.grasped]
         if len(bodies) > 0 and self.state != MyDroneEval.States.CARRYING_BODY:
             compass = self.measured_compass_angle()
-            positions = [(np.cos(body.angle - compass)*body.distance, np.sin(body.angle - compass)*body.distance) for body in bodies]
+            positions = [(np.cos(body.angle + compass)*body.distance, np.sin(body.angle + compass)*body.distance) for body in bodies]
             x, y = zip(*positions)
             x, y = sum(x) / len(x), sum(y) / len(y)
             self.following = MyDroneEval.ReachWrapper((gps[0]+x, gps[1]+y))
@@ -330,31 +330,13 @@ class MyDroneEval(DroneAbstract):
     
     def reach(self):
         """Reaches the entity defined in self.following."""
-        # gps = self.measured_gps_position()
-        # compass = self.measured_compass_angle()
-        # dist = self.following.distance(gps)
-        
-        # alpha = np.arctan2(self.following.y - gps[1], self.following.x - gps[0]) # - compass
-
-        # R = l / (1 - np.sin(alpha))
-        # N = max(11, np.pi / (1e-2 + math.asin(l / (2*R))))
-        # w = (np.pi/2 - alpha) / N
-        
-        # delta_x = self.odometer_values()[0]
-        # acc = max(-1, min(1, 4*np.sin(np.pi / N)*R - 2*delta_x))
-        
-        # self.forward = acc*np.cos(w)
-        # self.lateral = acc*np.sin(w)
-        # self.rotation = w if abs(alpha - compass) >= 0.5 else 0
-        # self.inertia[0] += self.forward
-        # self.inertia[1] += self.lateral
         gps = self.measured_gps_position()
         compass = self.measured_compass_angle()
         # Obtain the angle to turn from current orientation
         alpha = np.arctan2(self.following.y - gps[1], self.following.x - gps[0]) - compass
 
-        rot = min(np.exp(abs(alpha) / 90), 1)
+        rot = min(abs(alpha)*np.exp(abs(alpha) / (2*np.pi)), 1)
         self.rotation = np.sign(alpha)*rot*gomperz(self.last_ts)
-        self.forward = 0.5 if abs(rot) < 0.1 else 1
-        self.lateral = np.sign(alpha)*rot**2
+        self.forward = 1 if abs(rot) < 0.1 else 0.40
+        self.lateral = -np.sign(alpha)*rot**2
         self.last_ts += 1
