@@ -1,32 +1,17 @@
-"""
-This program can be launched directly.
-Example of how to use semantic sensor, grasping and dropping
-"""
-
-import os
-import sys
+# /usr/bin/env python3
 import random
-import math
-from typing import Optional, List, Type
 from enum import Enum
+from typing import Optional
 import numpy as np
 import pandas as pd
-from spg.utils.definitions import CollisionTypes
-
-# This line add, to sys.path, the path to parent path of this file
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from spg_overlay.entities.drone_abstract import DroneAbstract
 from spg_overlay.entities.drone_distance_sensors import DroneSemanticSensor
-from spg_overlay.entities.rescue_center import RescueCenter, wounded_rescue_center_collision
-from spg_overlay.entities.wounded_person import WoundedPerson
-from spg_overlay.gui_map.closed_playground import ClosedPlayground
-from spg_overlay.gui_map.gui_sr import GuiSR
-from spg_overlay.gui_map.map_abstract import MapAbstract
-from spg_overlay.utils.misc_data import MiscData
 from spg_overlay.utils.utils import normalize_angle, circular_mean
 import heapq
 
+d = 40
+l = 20
 
 class Node:
     def __init__(self, name, gps_coord, heuristic_cost=0):
@@ -37,6 +22,10 @@ class Node:
 
     def add_neighbor(self, neighbor, cost):
         self.neighbors.append((neighbor, cost))
+
+    def __getitem__(self, *args):
+        assert len(args) == 1 and args[0] in [0, 1]
+        return self.gps_coord[args[0]]
 
     def __str__(self):
         return f"Node(name={self.name}, gps_coord={self.gps_coord}, heuristic_cost={self.heuristic_cost}, neighbors={self.neighbors})"
@@ -84,7 +73,7 @@ def astar(graph, start, goal):
     cost_so_far = {start: 0}
 
     while open_set:
-        current_cost, current_node = heapq.heappop(open_set)
+        _, current_node = heapq.heappop(open_set)
 
         if current_node == goal:
             path = reconstruct_path(came_from, goal)
@@ -252,35 +241,35 @@ class MyDroneEval(DroneAbstract):
              # Update the graph
             self.update_graph()
             
-            import matplotlib.pyplot as plt
-            import matplotlib.patches as patches
+            # import matplotlib.pyplot as plt
+            # import matplotlib.patches as patches
 
-            fig, ax = plt.subplots(1)
+            # fig, ax = plt.subplots(1)
 
-            # Set the window size
-            ax.set_xlim([-450, 450])
-            ax.set_ylim([-350, 350])
+            # # Set the window size
+            # ax.set_xlim([-450, 450])
+            # ax.set_ylim([-350, 350])
 
-            # Loop over the rows of the dataframe and add each rectangle to the plot
-            for _, row in self.cells.iterrows():
-                rect = patches.Rectangle((row['llim'], row['dlim']), row['rlim']-row['llim'], row['ulim']-row['dlim'], linewidth=1, edgecolor='r', facecolor='blue', fill=True)
-                ax.add_patch(rect)
-            # Plot the graph nodes
-            for node in self.graph.nodes:
-                print(node.gps_coord[0])
-                x, y = node.gps_coord
-                ax.scatter(x, y, color='g', s=50)  # Adjust the size (s) as needed
+            # # Loop over the rows of the dataframe and add each rectangle to the plot
+            # for _, row in self.cells.iterrows():
+            #     rect = patches.Rectangle((row['llim'], row['dlim']), row['rlim']-row['llim'], row['ulim']-row['dlim'], linewidth=1, edgecolor='r', facecolor='blue', fill=True)
+            #     ax.add_patch(rect)
+            # # Plot the graph nodes
+            # for node in self.graph.nodes:
+            #     print(node.gps_coord[0])
+            #     x, y = node.gps_coord
+            #     ax.scatter(x, y, color='g', s=50)  # Adjust the size (s) as needed
     
-            # Plot the graph edges manually
-            for edge in self.graph.edges:
-                node1 = edge.start
-                node2 = edge.end
-                x1, y1 = node1.gps_coord
-                x2, y2 = node2.gps_coord
-                ax.plot([x1, x2], [y1, y2], color='g', linewidth=2)
-                print(x1, x2)
-            plt.show()
-            _ = 1
+            # # Plot the graph edges manually
+            # for edge in self.graph.edges:
+            #     node1 = edge.start
+            #     node2 = edge.end
+            #     x1, y1 = node1.gps_coord
+            #     x2, y2 = node2.gps_coord
+            #     ax.plot([x1, x2], [y1, y2], color='g', linewidth=2)
+            #     print(x1, x2)
+            # plt.show()
+            # _ = 1
 
         def update_graph(self):
             # Get the index and waypoints from the updated map
@@ -308,6 +297,8 @@ class MyDroneEval(DroneAbstract):
                         (self.cells['dlim'] < point[1]) & (point[1] <= self.cells['ulim']))
         
         def get_cell_for_point(self, point):
+
+    
             """
             Get the cell corresponding to the given point.
 
@@ -330,20 +321,46 @@ class MyDroneEval(DroneAbstract):
             else:
                 return False  
             
+    class ReachWrapper:
+        x: float = np.nan
+        y: float = np.nan
+        def __init__(self, obj) -> None:
+            try:
+                self.x = obj.x
+                self.y = obj.y
+            except AttributeError:
+                self.x = obj[0]
+                self.y = obj[1]
+        def distance(self, other):
+            try:
+                x = other.x
+                y = other.y
+            except AttributeError:
+                x = other[0]
+                y = other[1]
+            return np.sqrt((self.x - x)**2 + (self.y - y)**2)
+    
     def __init__(self,
                  identifier: Optional[int] = None, **kwargs):
         super().__init__(identifier=identifier,
                          display_lidar_graph=False,
                          **kwargs)
-        # The state is initialized to searching wounded person
-        self.state = self.Activity.SEARCHING_WOUNDED
+        random.seed(identifier)
 
-        # Those values are used by the random control function
-        self.counterStraight = 0
-        self.angleStopTurning = 0
-        self.isTurning = False
-        self.grid = MyDroneEval.RecursiveGrid()
+        self.forward = 0
+        self.lateral = 0
+        self.rotation = 0
+        self.grasper = 0
         self.last_ts = 0
+
+        # Boolean variables for state machine logic
+        self.found_wounded = False
+        self.found_rescue_center = False
+
+        # The state is initialized to searching wounded person
+        self.grid = MyDroneEval.RecursiveGrid()
+        self.state = MyDroneEval.Activity.SEARCHING_WOUNDED
+        self.following = MyDroneEval.ReachWrapper((np.inf, np.inf))
 
     def define_message_for_all(self):
         """
@@ -353,78 +370,107 @@ class MyDroneEval(DroneAbstract):
 
     def control(self):
         
-        # TODO : put this in a thread
-        # Check if there is a visible body or the rescue center
-        self.semantic = self.semantic_values()
-        self.gps = self.measured_gps_position()
-        bodies = [ray for ray in self.semantic if ray.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON and not ray.grasped]
-        if len(bodies) > 0 and self.state != MyDroneEval.States.CARRYING_BODY:
-            compass = self.measured_compass_angle()
-            positions = [(np.cos(body.angle + compass)*body.distance, np.sin(body.angle + compass)*body.distance) for body in bodies]
-            x, y = zip(*positions)
-            x, y = sum(x) / len(x), sum(y) / len(y)
-            self.following = MyDroneEval.ReachWrapper((self.gps[0]+x, self.gps[1]+y))
-            self.state = MyDroneEval.States.FOUND_BODY
-            self.last_ts = 0
-
-        found_wounded, found_rescue_center, command_semantic = self.process_semantic_sensor()
-        # Compute its position and set the following attribute
+        # Set the attributes needed later
+        self.semantic_val = self.semantic_values()
+        self.gps_val = self.measured_gps_position()
+        self.compass_val = self.measured_compass_angle()
         self.lidar_val = savitzky_golay(self.lidar_values(), 21, 3)
         
-        #############
-        # TRANSITIONS OF THE STATE MACHINE
-        #############
+        # Check if there is a visible body or the rescue center
+        
+        self.track_goals()
 
-        if self.state is self.Activity.SEARCHING_WOUNDED and found_wounded:
+        #update the grid
+        
+        self.update_grid()
+        
+        # found_wounded, found_rescue_center, command_semantic = self.process_semantic_sensor()
+        # Compute its position and set the following attribute
+        
+        ####################################
+        # TRANSITIONS OF THE STATE MACHINE #
+        ####################################
+
+        if self.state is self.Activity.SEARCHING_WOUNDED and self.found_wounded:
             self.state = self.Activity.GRASPING_WOUNDED
 
         elif self.state is self.Activity.GRASPING_WOUNDED and self.base.grasper.grasped_entities:
             self.state = self.Activity.SEARCHING_RESCUE_CENTER
+            self.found_wounded = False
             self.paths = astar(self.grid.graph, self.grid.last_visited_node, self.grid.rescue_point)
             self.path_index = 0
             print("paths", self.paths)
 
-        elif self.state is self.Activity.GRASPING_WOUNDED and not found_wounded:
+        # Should never happen
+        elif self.state is self.Activity.GRASPING_WOUNDED and not self.found_wounded:
             self.state = self.Activity.SEARCHING_WOUNDED
 
-        elif self.state is self.Activity.SEARCHING_RESCUE_CENTER and found_rescue_center:
+        elif self.state is self.Activity.SEARCHING_RESCUE_CENTER and self.found_rescue_center:
             self.state = self.Activity.DROPPING_AT_RESCUE_CENTER
 
         elif self.state is self.Activity.DROPPING_AT_RESCUE_CENTER and not self.base.grasper.grasped_entities:
+            self.found_rescue_center = False
             self.state = self.Activity.SEARCHING_WOUNDED
 
-        elif self.state is self.Activity.DROPPING_AT_RESCUE_CENTER and not found_rescue_center:
+        # Should never happen
+        elif self.state is self.Activity.DROPPING_AT_RESCUE_CENTER and not self.found_rescue_center:
             self.state = self.Activity.SEARCHING_RESCUE_CENTER
 
-        #print("state: {}, can_grasp: {}, grasped entities: {}".format(self.state.name,
-        #                                                              self.base.grasper.can_grasp,
-         #                                                             self.base.grasper.grasped_entities))
 
-        ##########
-        # COMMANDS FOR EACH STATE
-        # Searching randomly, but when a rescue center or wounded person is detected, we use a special command
-        ##########
+        #############################################################
+        # COMMANDS FOR EACH STATE                                   #
+        # Searching randomly, but when a wounded person is detected #
+        # we use A* algorithm to backtrack to the rescue center     #
+        #############################################################
         if self.state is self.Activity.SEARCHING_WOUNDED:
-            command = self.search()
+            self.search()
 
         elif self.state is self.Activity.GRASPING_WOUNDED or self.state is self.Activity.DROPPING_AT_RESCUE_CENTER:
-            command = command_semantic
-            self.grasper = 1
-            
-        elif self.state is self.Activity.SEARCHING_RESCUE_CENTER:
-            command = self.back_rescue(self.paths)
             self.grasper = 1
 
-        #update the grid
-       
-        if self.gps not in self.grid:
-            compass = convert_angle(self.measured_compass_angle()) # Returns values in [0, 180]
-            self.grid.update(self.gps, compass, self.lidar_val)
+        elif self.state is self.Activity.SEARCHING_RESCUE_CENTER:
+            if self.following.distance(self.gps_val) < d:
+                self.paths = self.paths[1:]
+                self.following = MyDroneEval.ReachWrapper(self.paths[0])
+            self.grasper = 1
+
+        # Once the attribute self.following is set let the commands be decided by
+        # our mechanical control function self.reach
+        self.reach()
+
+        return {"forward": self.forward,
+                "lateral": self.lateral,
+                "rotation": self.rotation,
+                "grasper": self.grasper}
+    
+    def track_goals(self):
+        bodies = [ray for ray in self.semantic_val if ray.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON and not ray.grasped]
+        if len(bodies) > 0 and self.state not in [MyDroneEval.Activity.SEARCHING_RESCUE_CENTER, MyDroneEval.Activity.DROPPING_AT_RESCUE_CENTER]:
+            positions = [(np.cos(body.angle + self.compass_val)*body.distance, np.sin(body.angle + self.compass_val)*body.distance) for body in bodies]
+            x, y = zip(*positions)
+            x, y = sum(x) / len(x), sum(y) / len(y)
+            self.following = MyDroneEval.ReachWrapper((self.gps_val[0]+x, self.gps_val[1]+y))
+            self.found_wounded = True
+            self.last_ts = 0
+        
+        rescue = [ray for ray in self.semantic_val if ray.entity_type == DroneSemanticSensor.TypeEntity.RESCUE_CENTER and not ray.grasped]
+        if len(rescue) > 0:
+            # positions = [(np.cos(body.angle + self.compass_val)*body.distance, np.sin(body.angle + self.compass_val)*body.distance) for body in bodies]
+            # x, y = zip(*positions)
+            # x, y = sum(x) / len(x), sum(y) / len(y)
+            self.found_rescue_center = True
         else:
-            compass = convert_angle(self.measured_compass_angle())
+            self.found_rescue_center = False
+
+    def update_grid(self):
+        if self.gps_val not in self.grid:
+            compass = convert_angle(self.compass_val) # Returns values in [0, 180]
+            self.grid.update(self.gps_val, compass, self.lidar_val)
+        else:
+            compass = convert_angle(self.compass_val)
 
             # Check if the GPS is in a different cell than the last visited waypoint
-            current_cell = self.grid.get_cell_for_point(self.gps)
+            current_cell = self.grid.get_cell_for_point(self.gps_val)
             if getattr(self, 'last_visited_node', None) is not None:
                 print(current_cell)
                 last_visited_waypoint_cell = self.grid.get_cell_for_point(self.last_visited_node.gps_coord)
@@ -434,132 +480,39 @@ class MyDroneEval(DroneAbstract):
                     self.last_visited_node = self.grid.graph.get_node_by_coords(self.grid.get_waypoint_for_cell(current_cell))
                     print("last visited", self.last_visited_node)
 
-        return command
+    def search(self):
+        """Logic for determining the next goal position in the map"""
+        converted_compass = convert_angle(self.compass_val) # Returns values in [0, 180]
+        goal_angle = convert_angle(np.arctan2(self.following.y - self.gps_val[1], self.following.x - self.gps_val[0]))
+        d2goal = self.lidar_val[(90+goal_angle-converted_compass)%181]
+        # print(self.following.distance(gps))
+        # If the destination is reached or it is impossible to reach it from this position find a new one
+        if not (d < self.following.distance(self.gps_val) < np.inf) or self.following.distance(self.gps_val) / d2goal > 1.02:
+            # if gps not in self.grid:
+            #     self.grid.update(gps, compass, self.lidar_val)
+            # Check with the cells with neighboring ids and move to unseen scenarios
+            rays = np.roll(self.lidar_val[:-1], 90+converted_compass)
+            q80 = np.quantile(self.lidar_val, 0.8)
+            guess = self.gps_val + (rays * np.vstack([np.cos(np.arange(0, 2*np.pi, 2*np.pi/180)),
+                                                        np.sin(np.arange(0, 2*np.pi, 2*np.pi/180))])).T
+            guess = guess[rays > q80]
+            guess = np.apply_along_axis(lambda row: row if row not in self.grid else np.array([np.nan, np.nan]), 1, guess)
+            guess = guess[(~np.isnan(guess)).any(axis=1)]
 
-    def process_lidar_sensor(self, the_lidar_sensor):
-        command = {"forward": 1.0,
-                   "lateral": 0.0,
-                   "rotation": 0.0}
-        angular_vel_controller = 0.5
-
-        values = the_lidar_sensor.get_sensor_values()
-
-        if values is None:
-            return command, False
-
-        ray_angles = the_lidar_sensor.ray_angles
-        size = the_lidar_sensor.resolution
-
-        far_angle_raw = 0
-        near_angle_raw = 0
-        min_dist = 1000
-        if size != 0:
-            # far_angle_raw : angle with the longer distance
-            # 这两个角度没看明白，是什么意思？
-            far_angle_raw = ray_angles[np.argmax(values)]
-            min_dist = min(values)
-            # near_angle_raw : angle with the nearest distance
-            near_angle_raw = ray_angles[np.argmin(values)]
-
-        far_angle = far_angle_raw
-        # If far_angle_raw is small then far_angle = 0
-        if abs(far_angle) < 1 / 180 * np.pi:
-            far_angle = 0.0
-
-        near_angle = near_angle_raw
-        #print(f"near angle: {near_angle}")
-        far_angle = normalize_angle(far_angle)
-        #print(f"far angle: {far_angle}")
-
-        # The drone will turn toward the zone with the more space ahead
-        #控制往哪个方向转，顺时针转还是逆时针转
-        if size != 0:
-            if far_angle > 0:
-                command["rotation"] = angular_vel_controller
-            elif far_angle == 0:
-                command["rotation"] = 0
-            else:
-                command["rotation"] = -angular_vel_controller
-
-        # If near a wall then 'collision' is True and the drone tries to turn its back to the wall
-        # size是什么
-        collision = False
-        if size != 0 and min_dist < 10:
-            collision = True
-            if near_angle > 0:
-                command["rotation"] = -angular_vel_controller
+            if guess.size == 0:
+                self.following = MyDroneEval.ReachWrapper(self.grid.cells.loc[1, ["waypoint_x", "waypoint_y"]])
+                # print([self.following.x, self.following.y])
             else:
                 self.following = MyDroneEval.ReachWrapper(guess[np.random.choice(guess.shape[0])])
-                print([self.following.x, self.following.y])
+                # print([self.following.x, self.following.y])
             self.last_ts = 0
-        
-        self.reach()
-        
-    
-    def back_rescue(self, paths):
-        """
-        Follows a predefined path while avoiding collisions using lidar data.
-        """
-        #print("back")
-        command = {"forward": 0.0,
-                "lateral": 0.0,
-                "rotation": 0.0,
-                "grasper": 0}
 
-        command_lidar, collision_lidar = self.process_lidar_sensor(self.lidar())
-
-        alpha = 0.4
-        alpha_rot = 0.75
-
-        if collision_lidar:
-            alpha_rot = 0.1
-
-        # The final command is a combination of lidar-based control and path-following control
-        command_ret = self.follow_path(paths)
-        command = command_ret
-        
-        return command
-
-    def follow_path(self, paths):
-        """
-        Follows the predefined path using proportional control.
-        """
-        command = {"forward": 0.0,
-                "lateral": 0.0,
-                "rotation": 0.0,
-                "grasper": 0}
-        gps = self.measured_gps_position()
-        compass = self.measured_compass_angle()
-
-        # Assuming paths is a list of nodes (waypoints) to follow
-        target_node = paths[self.path_index]
-        # Obtain the angle to turn from current orientation
-        alpha = np.arctan2(target_node.gps_coord[1] - gps[1], target_node.gps_coord[0] - gps[0]) - compass
-
-        rot = min(np.exp(abs(alpha) / 90), 1)
-        command["rotation"] = 0.7 * np.sign(alpha) * rot * gomperz(self.last_ts)
-        command["forward"] = 0.4 * 0.3 if abs(rot) < 0.1 else 0.7
-        command["lateral"] = 0.4 * - np.sign(alpha) * rot ** 2
-        self.last_ts += 0.5
-
-        # Check if the drone is close to the current target node
-        distance_to_target = np.linalg.norm(np.array(gps) - np.array(target_node.gps_coord))
-        if distance_to_target < 10.0:  # Adjust this threshold as needed
-            self.path_index += 1  # Move to the next node in the path
-            self.last_ts = 0
-            print("index->", self.path_index)
-
-        return command
 
     def reach(self):
         """Reaches the entity defined in self.following."""
-        gps = self.measured_gps_position()
-        compass = self.measured_compass_angle()
 
-        # Assuming paths is a list of nodes (waypoints) to follow
-        target_node = paths[self.path_index]
         # Obtain the angle to turn from current orientation
-        alpha = np.arctan2(target_node.gps_coord[1] - gps[1], target_node.gps_coord[0] - gps[0]) - compass
+        alpha = np.arctan2(self.following.y - self.gps_val[1], self.following.x - self.gps_val[0]) - self.compass_val
 
         rot = min(abs(alpha)*np.exp(abs(alpha) / (2*np.pi)), 1)
         self.rotation = np.sign(alpha)*rot*gomperz(self.last_ts)
@@ -567,69 +520,127 @@ class MyDroneEval(DroneAbstract):
         self.lateral = -np.sign(alpha)*rot**2
         self.last_ts += 1
 
-    def process_semantic_sensor(self):
-        """
-        According to his state in the state machine, the Drone will move towards a wound person or the rescue center
-        """
-        command = {"forward": 0.5,
-                   "lateral": 0.0,
-                   "rotation": 0.0}
-        angular_vel_controller_max = 1.0
+    # def process_semantic_sensor(self):
+    #     """
+    #     According to his state in the state machine, the Drone will move towards a wound person or the rescue center
+    #     """
+    #     command = {"forward": 0.5,
+    #                "lateral": 0.0,
+    #                "rotation": 0.0}
+    #     angular_vel_controller_max = 1.0
 
-        detection_semantic = self.semantic_values()
-        best_angle = 0
+    #     best_angle = 0
 
-        found_wounded = False
-        if (self.state is self.Activity.SEARCHING_WOUNDED
-            or self.state is self.Activity.GRASPING_WOUNDED) \
-                and detection_semantic is not None:
-            scores = []
-            for data in detection_semantic:
-                # If the wounded person detected is held by nobody
-                if data.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON and not data.grasped:
-                    found_wounded = True
-                    v = (data.angle * data.angle) + \
-                        (data.distance * data.distance / 10 ** 5)
-                    scores.append((v, data.angle, data.distance))
+    #     found_wounded = False
+    #     if (self.state is self.Activity.SEARCHING_WOUNDED
+    #         or self.state is self.Activity.GRASPING_WOUNDED) \
+    #             and self.semantic_val is not None:
+    #         scores = []
+    #         for data in self.semantic_val:
+    #             # If the wounded person detected is held by nobody
+    #             if data.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON and not data.grasped:
+    #                 found_wounded = True
+    #                 v = (data.angle * data.angle) + \
+    #                     (data.distance * data.distance / 10 ** 5)
+    #                 scores.append((v, data.angle, data.distance))
 
-            # Select the best one among wounded persons detected
-            best_score = 10000
-            for score in scores:
-                if score[0] < best_score:
-                    best_score = score[0]
-                    best_angle = score[1]
+    #         # Select the best one among wounded people detected
+    #         best_score = 10000
+    #         for score in scores:
+    #             if score[0] < best_score:
+    #                 best_score = score[0]
+    #                 best_angle = score[1]
 
-        found_rescue_center = False
-        is_near = False
-        angles_list = []
-        if (self.state is self.Activity.SEARCHING_RESCUE_CENTER
-            or self.state is self.Activity.DROPPING_AT_RESCUE_CENTER) \
-                and detection_semantic:
-            for data in detection_semantic:
-                if data.entity_type == DroneSemanticSensor.TypeEntity.RESCUE_CENTER:
-                    found_rescue_center = True
-                    angles_list.append(data.angle)
-                    is_near = (data.distance < 50)
+    #     found_rescue_center = False
+    #     is_near = False
+    #     angles_list = []
+    #     if (self.state is self.Activity.SEARCHING_RESCUE_CENTER
+    #         or self.state is self.Activity.DROPPING_AT_RESCUE_CENTER) \
+    #             and self.semantic_val:
+    #         for data in self.semantic_val:
+    #             if data.entity_type == DroneSemanticSensor.TypeEntity.RESCUE_CENTER:
+    #                 found_rescue_center = True
+    #                 angles_list.append(data.angle)
+    #                 is_near = (data.distance < 50)
 
-            if found_rescue_center:
-                best_angle = circular_mean(np.array(angles_list))
+    #         if found_rescue_center:
+    #             best_angle = circular_mean(np.array(angles_list))
 
-        if found_rescue_center or found_wounded:
-            # simple P controller
-            # The robot will turn until best_angle is 0
-            kp = 2.0
-            a = kp * best_angle
-            a = min(a, 1.0)
-            a = max(a, -1.0)
-            command["rotation"] = a * angular_vel_controller_max
+    #     if found_rescue_center or found_wounded:
+    #         # simple P controller
+    #         # The robot will turn until best_angle is 0
+    #         kp = 2.0
+    #         a = kp * best_angle
+    #         a = min(a, 1.0)
+    #         a = max(a, -1.0)
+    #         command["rotation"] = a * angular_vel_controller_max
 
-            # reduce speed if we need to turn a lot
-            if abs(a) == 1:
-                command["forward"] = 0.2
+    #         # reduce speed if we need to turn a lot
+    #         if abs(a) == 1:
+    #             command["forward"] = 0.2
 
-        if found_rescue_center and is_near:
-            command["forward"] = 0
-            command["rotation"] = random.uniform(0.5, 1)
+    #     if found_rescue_center and is_near:
+    #         command["forward"] = 0
+    #         command["rotation"] = random.uniform(0.5, 1)
 
-        return found_wounded, found_rescue_center, command
+    #     return found_wounded, found_rescue_center, command
 
+
+    # def process_lidar_sensor(self, the_lidar_sensor):
+    #     command = {"forward": 1.0,
+    #                "lateral": 0.0,
+    #                "rotation": 0.0}
+    #     angular_vel_controller = 0.5
+
+    #     values = the_lidar_sensor.get_sensor_values()
+
+    #     if values is None:
+    #         return command, False
+
+    #     ray_angles = the_lidar_sensor.ray_angles
+    #     size = the_lidar_sensor.resolution
+
+    #     far_angle_raw = 0
+    #     near_angle_raw = 0
+    #     min_dist = 1000
+    #     if size != 0:
+    #         # far_angle_raw : angle with the longer distance
+    #         # 这两个角度没看明白，是什么意思？
+    #         far_angle_raw = ray_angles[np.argmax(values)]
+    #         min_dist = min(values)
+    #         # near_angle_raw : angle with the nearest distance
+    #         near_angle_raw = ray_angles[np.argmin(values)]
+
+    #     far_angle = far_angle_raw
+    #     # If far_angle_raw is small then far_angle = 0
+    #     if abs(far_angle) < 1 / 180 * np.pi:
+    #         far_angle = 0.0
+
+    #     near_angle = near_angle_raw
+    #     #print(f"near angle: {near_angle}")
+    #     far_angle = normalize_angle(far_angle)
+    #     #print(f"far angle: {far_angle}")
+
+    #     # The drone will turn toward the zone with the more space ahead
+    #     #控制往哪个方向转，顺时针转还是逆时针转
+    #     if size != 0:
+    #         if far_angle > 0:
+    #             command["rotation"] = angular_vel_controller
+    #         elif far_angle == 0:
+    #             command["rotation"] = 0
+    #         else:
+    #             command["rotation"] = -angular_vel_controller
+
+    #     # If near a wall then 'collision' is True and the drone tries to turn its back to the wall
+    #     # size是什么
+    #     collision = False
+    #     if size != 0 and min_dist < 10:
+    #         collision = True
+    #         if near_angle > 0:
+    #             command["rotation"] = -angular_vel_controller
+    #         else:
+    #             self.following = MyDroneEval.ReachWrapper(guess[np.random.choice(guess.shape[0])])
+    #             print([self.following.x, self.following.y])
+    #         self.last_ts = 0
+        
+    #     self.reach()
