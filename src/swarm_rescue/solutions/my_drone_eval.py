@@ -355,15 +355,15 @@ class MyDroneEval(DroneAbstract):
         
         # TODO : put this in a thread
         # Check if there is a visible body or the rescue center
-        semantic = self.semantic_values()
-        gps = self.measured_gps_position()
-        bodies = [ray for ray in semantic if ray.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON and not ray.grasped]
+        self.semantic = self.semantic_values()
+        self.gps = self.measured_gps_position()
+        bodies = [ray for ray in self.semantic if ray.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON and not ray.grasped]
         if len(bodies) > 0 and self.state != MyDroneEval.States.CARRYING_BODY:
             compass = self.measured_compass_angle()
             positions = [(np.cos(body.angle + compass)*body.distance, np.sin(body.angle + compass)*body.distance) for body in bodies]
             x, y = zip(*positions)
             x, y = sum(x) / len(x), sum(y) / len(y)
-            self.following = MyDroneEval.ReachWrapper((gps[0]+x, gps[1]+y))
+            self.following = MyDroneEval.ReachWrapper((self.gps[0]+x, self.gps[1]+y))
             self.state = MyDroneEval.States.FOUND_BODY
             self.last_ts = 0
 
@@ -405,32 +405,26 @@ class MyDroneEval(DroneAbstract):
         # Searching randomly, but when a rescue center or wounded person is detected, we use a special command
         ##########
         if self.state is self.Activity.SEARCHING_WOUNDED:
-            command = self.control_random()
-            command["grasper"] = 0
+            command = self.search()
 
-        elif self.state is self.Activity.GRASPING_WOUNDED:
+        elif self.state is self.Activity.GRASPING_WOUNDED or self.state is self.Activity.DROPPING_AT_RESCUE_CENTER:
             command = command_semantic
-            command["grasper"] = 1
+            self.grasper = 1
             
         elif self.state is self.Activity.SEARCHING_RESCUE_CENTER:
             command = self.back_rescue(self.paths)
-            command["grasper"] = 1
-
-        elif self.state is self.Activity.DROPPING_AT_RESCUE_CENTER:
-            command = command_semantic
-            command["grasper"] = 1
+            self.grasper = 1
 
         #update the grid
-        gps = self.measured_gps_position()
        
-        if gps not in self.grid:
+        if self.gps not in self.grid:
             compass = convert_angle(self.measured_compass_angle()) # Returns values in [0, 180]
-            self.grid.update(gps, compass, self.lidar_val)
+            self.grid.update(self.gps, compass, self.lidar_val)
         else:
             compass = convert_angle(self.measured_compass_angle())
 
             # Check if the GPS is in a different cell than the last visited waypoint
-            current_cell = self.grid.get_cell_for_point(gps)
+            current_cell = self.grid.get_cell_for_point(self.gps)
             if getattr(self, 'last_visited_node', None) is not None:
                 print(current_cell)
                 last_visited_waypoint_cell = self.grid.get_cell_for_point(self.last_visited_node.gps_coord)
