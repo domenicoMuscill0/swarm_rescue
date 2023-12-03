@@ -191,7 +191,7 @@ def savitzky_golay(y, window_size, order, deriv=0, rate=1):
     y = np.concatenate((firstvals, y, lastvals))
     return np.convolve( m[::-1], y, mode='valid')
 
-def gomperz(x, a=0.008, b=30, rate=0.1) -> float:
+def gomperz(x, a=0.008, b=20, rate=0.1) -> float:
     return 1 - a*np.exp(-np.exp(-rate*(x-b)))
 
 
@@ -352,13 +352,23 @@ class MyDroneEval(DroneAbstract):
         pass
 
     def control(self):
-        command = {"forward": 0.0,
-                   "lateral": 0.0,
-                   "rotation": 0.0,
-                   "grasper": 0}
+        
+        # TODO : put this in a thread
+        # Check if there is a visible body or the rescue center
+        semantic = self.semantic_values()
+        gps = self.measured_gps_position()
+        bodies = [ray for ray in semantic if ray.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON and not ray.grasped]
+        if len(bodies) > 0 and self.state != MyDroneEval.States.CARRYING_BODY:
+            compass = self.measured_compass_angle()
+            positions = [(np.cos(body.angle + compass)*body.distance, np.sin(body.angle + compass)*body.distance) for body in bodies]
+            x, y = zip(*positions)
+            x, y = sum(x) / len(x), sum(y) / len(y)
+            self.following = MyDroneEval.ReachWrapper((gps[0]+x, gps[1]+y))
+            self.state = MyDroneEval.States.FOUND_BODY
+            self.last_ts = 0
 
         found_wounded, found_rescue_center, command_semantic = self.process_semantic_sensor()
-         # Compute its position and set the following attribute
+        # Compute its position and set the following attribute
         self.lidar_val = savitzky_golay(self.lidar_values(), 21, 3)
         
         #############
@@ -485,33 +495,12 @@ class MyDroneEval(DroneAbstract):
             if near_angle > 0:
                 command["rotation"] = -angular_vel_controller
             else:
-                command["rotation"] = angular_vel_controller
-
-        return command, collision
-
-    def control_random(self):
-        """
-        Here we change it and combine it with the lidar_communication
-        """
-        command = {"forward": 0.0,
-                   "lateral": 0.0,
-                   "rotation": 0.0,
-                   "grasper": 0}
-
-        command_lidar, collision_lidar = self.process_lidar_sensor(self.lidar())
-
-        alpha = 0.4
-        alpha_rot = 0.75
-
-        if collision_lidar:
-            alpha_rot = 0.1
-
-        # The final command  is a combination of 2 commands
-        command["forward"] = (1 - alpha) * command_lidar["forward"]
-        command["lateral"] = (1 - alpha) * command_lidar["lateral"]
-        command["rotation"] = (1 - alpha_rot) * command_lidar["rotation"]
+                self.following = MyDroneEval.ReachWrapper(guess[np.random.choice(guess.shape[0])])
+                print([self.following.x, self.following.y])
+            self.last_ts = 0
         
-        return command
+        self.reach()
+        
     
     def back_rescue(self, paths):
         """
@@ -567,6 +556,22 @@ class MyDroneEval(DroneAbstract):
             print("index->", self.path_index)
 
         return command
+
+    def reach(self):
+        """Reaches the entity defined in self.following."""
+        gps = self.measured_gps_position()
+        compass = self.measured_compass_angle()
+
+        # Assuming paths is a list of nodes (waypoints) to follow
+        target_node = paths[self.path_index]
+        # Obtain the angle to turn from current orientation
+        alpha = np.arctan2(target_node.gps_coord[1] - gps[1], target_node.gps_coord[0] - gps[0]) - compass
+
+        rot = min(abs(alpha)*np.exp(abs(alpha) / (2*np.pi)), 1)
+        self.rotation = np.sign(alpha)*rot*gomperz(self.last_ts)
+        self.forward = 1 if abs(rot) < 0.1 else 0.40
+        self.lateral = -np.sign(alpha)*rot**2
+        self.last_ts += 1
 
     def process_semantic_sensor(self):
         """
@@ -634,80 +639,3 @@ class MyDroneEval(DroneAbstract):
 
         return found_wounded, found_rescue_center, command
 
-
-
-class MyMapSemantic(MapAbstract):
-    def __init__(self):
-        super().__init__()
-
-        # PARAMETERS MAP
-        self._size_area = (400, 400)
-
-        self._rescue_center = RescueCenter(size=(100, 100))
-        self._rescue_center_pos = ((0, 150), 0)
-
-        # WOUNDED PERSONS
-        self._number_wounded_persons = 20
-        self._wounded_persons_pos = []
-        self._wounded_persons: List[WoundedPerson] = []
-
-        start_area = (0.0, -30.0)
-        nb_per_side = math.ceil(math.sqrt(float(self._number_wounded_persons)))
-        dist_inter_wounded = 60.0
-        sx = start_area[0] - (nb_per_side - 1) * 0.5 * dist_inter_wounded
-        sy = start_area[1] - (nb_per_side - 1) * 0.5 * dist_inter_wounded
-
-        for i in range(self._number_wounded_persons):
-            x = sx + (float(i) % nb_per_side) * dist_inter_wounded
-            y = sy + math.floor(float(i) / nb_per_side) * dist_inter_wounded
-            pos = ((x, y), random.uniform(-math.pi, math.pi))
-            self._wounded_persons_pos.append(pos)
-
-        # POSITIONS OF THE DRONES
-        self._number_drones = 1
-        self._drones_pos = [((40, 40), random.uniform(-math.pi, math.pi))]
-        self._drones = []
-
-    def construct_playground(self, drone_type: Type[DroneAbstract]):
-        playground = ClosedPlayground(size=self._size_area)
-
-        # RESCUE CENTER
-        playground.add_interaction(CollisionTypes.GEM,
-                                   CollisionTypes.ACTIVABLE_BY_GEM,
-                                   wounded_rescue_center_collision)
-
-        playground.add(self._rescue_center, self._rescue_center_pos)
-
-        # POSITIONS OF THE WOUNDED PERSONS
-        for i in range(self._number_wounded_persons):
-            wounded_person = WoundedPerson(rescue_center=self._rescue_center)
-            self._wounded_persons.append(wounded_person)
-            pos = self._wounded_persons_pos[i]
-            playground.add(wounded_person, pos)
-
-        # POSITIONS OF THE DRONES
-        misc_data = MiscData(size_area=self._size_area,
-                             number_drones=self._number_drones)
-        for i in range(self._number_drones):
-            drone = drone_type(identifier=i, misc_data=misc_data)
-            self._drones.append(drone)
-            playground.add(drone, self._drones_pos[i])
-
-        return playground
-
-
-def main():
-    my_map = MyMapSemantic()
-    playground = my_map.construct_playground(drone_type=MyDroneEval)
-
-    # draw_semantic_rays : enable the visualization of the semantic rays
-    gui = GuiSR(playground=playground,
-                the_map=my_map,
-                draw_semantic_rays=True,
-                use_keyboard=False,
-                )
-    gui.run()
-
-
-if __name__ == '__main__':
-    main()
