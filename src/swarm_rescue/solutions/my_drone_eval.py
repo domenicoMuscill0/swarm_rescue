@@ -246,21 +246,21 @@ class MyDroneEval(DroneAbstract):
 
             # fig, ax = plt.subplots(1)
 
-            # # Set the window size
+            # ## Set the window size
             # ax.set_xlim([-450, 450])
             # ax.set_ylim([-350, 350])
 
-            # # Loop over the rows of the dataframe and add each rectangle to the plot
+            # # # Loop over the rows of the dataframe and add each rectangle to the plot
             # for _, row in self.cells.iterrows():
             #     rect = patches.Rectangle((row['llim'], row['dlim']), row['rlim']-row['llim'], row['ulim']-row['dlim'], linewidth=1, edgecolor='r', facecolor='blue', fill=True)
             #     ax.add_patch(rect)
-            # # Plot the graph nodes
+            # # # Plot the graph nodes
             # for node in self.graph.nodes:
             #     print(node.gps_coord[0])
             #     x, y = node.gps_coord
             #     ax.scatter(x, y, color='g', s=50)  # Adjust the size (s) as needed
     
-            # # Plot the graph edges manually
+            #  # Plot the graph edges manually
             # for edge in self.graph.edges:
             #     node1 = edge.start
             #     node2 = edge.end
@@ -308,18 +308,17 @@ class MyDroneEval(DroneAbstract):
             Returns:
             - pd.Series or None: The cell data if the point is in a cell, else None.
             """
-            in_cell = (
+            in_cell_mask = (
                 (self.cells['llim'] <= point[0]) &
                 (point[0] <= self.cells['rlim']) &
                 (self.cells['dlim'] <= point[1]) &
                 (point[1] <= self.cells['ulim'])
             )
             
-            # Check if any cell contains the point
-            if in_cell.any():
-                return True  # The point is in a cell
+            if in_cell_mask.any():  # Check if any cell contains the point
+                return self.cells[in_cell_mask].iloc[0]  # Return the first matching cell
             else:
-                return False  
+                return None 
             
     class ReachWrapper:
         x: float = np.nan
@@ -430,7 +429,8 @@ class MyDroneEval(DroneAbstract):
 
         elif self.state is self.Activity.SEARCHING_RESCUE_CENTER:
             if self.following.distance(self.gps_val) < d:
-                self.paths = self.paths[1:]
+                if(len(self.paths)>1):
+                    self.paths = self.paths[1:]
                 self.following = MyDroneEval.ReachWrapper(self.paths[0])
             self.grasper = 1
 
@@ -471,14 +471,15 @@ class MyDroneEval(DroneAbstract):
 
             # Check if the GPS is in a different cell than the last visited waypoint
             current_cell = self.grid.get_cell_for_point(self.gps_val)
-            if getattr(self, 'last_visited_node', None) is not None:
-                print(current_cell)
-                last_visited_waypoint_cell = self.grid.get_cell_for_point(self.last_visited_node.gps_coord)
-                print(last_visited_waypoint_cell)
+            print(current_cell, self.grid.last_visited_node)
+            if getattr(self.grid, 'last_visited_node', None) is not None:
+                last_visited_waypoint_cell = self.grid.get_cell_for_point(self.grid.last_visited_node.gps_coord)
+                #
+                print("last visited_cell",last_visited_waypoint_cell)
                 if last_visited_waypoint_cell is not None and (current_cell['waypoint_x'] != last_visited_waypoint_cell['waypoint_x'] or current_cell['waypoint_y'] != last_visited_waypoint_cell['waypoint_y']):
                     # Update the last visited waypoint
-                    self.last_visited_node = self.grid.graph.get_node_by_coords(self.grid.get_waypoint_for_cell(current_cell))
-                    print("last visited", self.last_visited_node)
+                    self.grid.last_visited_node = self.grid.graph.get_node_by_coords((current_cell['waypoint_x'],current_cell['waypoint_y']))
+                    print("last visited updated", last_visited_waypoint_cell, self.grid.last_visited_node)
 
     def search(self):
         """Logic for determining the next goal position in the map"""
@@ -506,7 +507,6 @@ class MyDroneEval(DroneAbstract):
                 self.following = MyDroneEval.ReachWrapper(guess[np.random.choice(guess.shape[0])])
                 # print([self.following.x, self.following.y])
             self.last_ts = 0
-
 
     def reach(self):
         """Reaches the entity defined in self.following."""
