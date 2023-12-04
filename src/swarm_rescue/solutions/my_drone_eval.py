@@ -275,21 +275,21 @@ class MyDroneEval(DroneAbstract):
 
             # fig, ax = plt.subplots(1)
 
-            # # Set the window size
+            # ## Set the window size
             # ax.set_xlim([-450, 450])
             # ax.set_ylim([-350, 350])
 
-            # # Loop over the rows of the dataframe and add each rectangle to the plot
+            # # # Loop over the rows of the dataframe and add each rectangle to the plot
             # for _, row in self.cells.iterrows():
             #     rect = patches.Rectangle((row['llim'], row['dlim']), row['rlim']-row['llim'], row['ulim']-row['dlim'], linewidth=1, edgecolor='r', facecolor='blue', fill=True)
             #     ax.add_patch(rect)
-            # # Plot the graph nodes
+            # # # Plot the graph nodes
             # for node in self.graph.nodes:
             #     print(node.gps_coord[0])
             #     x, y = node.gps_coord
             #     ax.scatter(x, y, color='g', s=50)  # Adjust the size (s) as needed
     
-            # # Plot the graph edges manually
+            #  # Plot the graph edges manually
             # for edge in self.graph.edges:
             #     node1 = edge.start
             #     node2 = edge.end
@@ -344,11 +344,10 @@ class MyDroneEval(DroneAbstract):
                 (point[1] <= self.cells['ulim'])
             )
             
-            # Check if any cell contains the point
-            if in_cell_mask.any():
-                return self.cells[in_cell_mask].iloc[0]  # The point is in a cell
+            if in_cell_mask.any():  # Check if any cell contains the point
+                return self.cells[in_cell_mask].iloc[0]  # Return the first matching cell
             else:
-                return None  
+                return None 
             
     class ReachWrapper:
         x: float = np.nan
@@ -461,7 +460,7 @@ class MyDroneEval(DroneAbstract):
 
         elif self.state is self.Activity.SEARCHING_RESCUE_CENTER:
             if self.following.distance(self.gps_val) < d:
-                if len(self.paths) > 1:
+                if(len(self.paths)>1):
                     self.paths = self.paths[1:]
                 self.following = MyDroneEval.ReachWrapper(self.paths[0])
             self.grasper = 1
@@ -560,7 +559,6 @@ class MyDroneEval(DroneAbstract):
                 next_destination = guess[np.random.choice(guess.shape[0])]
                 self.following = MyDroneEval.ReachWrapper(next_destination)
             self.last_ts = 0
-
 
     def reach(self):
         """Reaches the entity defined in self.following."""
