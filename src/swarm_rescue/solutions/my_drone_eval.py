@@ -45,6 +45,13 @@ def intercept_grid(cells, lims, gps_coord):
             elif cells[i, 1] > gps_coord[0]:
                 lims[3] = min(cells[i, 1], lims[3])
 
+def clean_material_following(rays, semantic):
+    for s in semantic:
+        if s.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON:
+            body_ray = (convert_angle(s.angle)+90)%180
+            rays[body_ray-5:body_ray+5] = np.inf
+    return rays
+
 class Node:
     def __init__(self, name, gps_coord, heuristic_cost=0):
         self.name = name
@@ -238,31 +245,32 @@ class MyDroneEval(DroneAbstract):
             lims = np.zeros((6,))    # limit in the 4 directions
             
             # vertical_limits = self.cells[(self.cells["llim"] < gps_coord[0]) & (gps_coord[0] < self.cells["rlim"])] # We assume being in an unknown cell
-            up = rays[0:90]
-            up_wall = up * np.sin(np.pi*np.arange(90)/180)
+            up = rays[0+22:90-22]
+            up_wall = up * np.sin(np.pi*np.arange(90-2*22)/180)
             lims[0] = gps_coord[1] + 0.75*up_wall.max()
             
-            down = rays[90:]
-            down_wall = down * np.sin(np.pi*np.arange(90)/180)
+            down = rays[90+22:-22]
+            down_wall = down * np.sin(np.pi*np.arange(90-2*22)/180)
             lims[2] = gps_coord[1] - 0.75*down_wall.max()
             
             # horizontal_limits = self.cells[(self.cells["dlim"] < gps_coord[1]) & (gps_coord[1] < self.cells["ulim"])]
-            left = rays[45:135]
-            left_wall = left * np.sin(np.pi*np.arange(90)/180)
+            left = rays[45+22:135-22]
+            left_wall = left * np.sin(np.pi*np.arange(90-2*22)/180)
             lims[1] = gps_coord[0] - 0.75*left_wall.max()
             
 
-            right = np.concatenate((rays[-45:], rays[:45]))
-            right_wall = right * np.sin(np.pi*np.arange(90)/180)
+            right = np.concatenate((rays[-45+22:], rays[:45-22]))
+            right_wall = right * np.sin(np.pi*np.arange(90-2*22)/180)
             lims[3] = gps_coord[0] + 0.75*right_wall.max()
+
+            # Impose a minimum cell size if the number of cells becomes a problem
+            # if((lims[0]-lims[2])*(lims[3] - lims[1]) < 30):
+            #     return
 
             # Check the intersections with the other cells
             
             # These 8 lines take 45 avg
-            start = time.time()
             intercept_grid(self.cells.values, lims, gps_coord)
-            end = time.time()
-            print(f"Time spent by 'self.track_goals': {(end-start)*10000} s")
 
             lims[-2:] = [*gps_coord]
             self.cells.loc[-1] = lims
@@ -276,8 +284,11 @@ class MyDroneEval(DroneAbstract):
             # fig, ax = plt.subplots(1)
 
             # ## Set the window size
-            # ax.set_xlim([-450, 450])
-            # ax.set_ylim([-350, 350])
+            # ax.set_xlim([-400, 400])  # Map intermediate 01
+            # ax.set_ylim([-250, 250])
+
+            # # ax.set_xlim([-830, 830])  # Map medium 01
+            # # ax.set_ylim([-561, 561])
 
             # # # Loop over the rows of the dataframe and add each rectangle to the plot
             # for _, row in self.cells.iterrows():
@@ -345,7 +356,7 @@ class MyDroneEval(DroneAbstract):
             )
             
             if in_cell_mask.any():  # Check if any cell contains the point
-                return self.cells[in_cell_mask].iloc[0]  # Return the first matching cell
+                return self.cells[in_cell_mask].iloc[0], np.where(in_cell_mask)[0].item()  # Return the first matching cell
             else:
                 return None 
             
@@ -397,6 +408,7 @@ class MyDroneEval(DroneAbstract):
         pass
 
     def control(self):
+        start = time.time()
         
         # Set the attributes needed later
         self.semantic_val = self.semantic_values()
@@ -450,24 +462,27 @@ class MyDroneEval(DroneAbstract):
         # Searching randomly, but when a wounded person is detected #
         # we use A* algorithm to backtrack to the rescue center     #
         #############################################################
-        # if self.lidar_val[90-22:90+22].min() < d:  # FOV: 90 degrees
-        #     self.solve_collision()  # < 1
-        if self.state is self.Activity.SEARCHING_WOUNDED:
-            self.search()   # 0.5 most of the times but sometimes 200 (very few times)
+        if clean_material_following(self.lidar_val, self.semantic_val)[90-22:90+22].min() < l:  # FOV: 90 degrees
+            self.solve_collision()  # < 1
+        else:
+            if self.state is self.Activity.SEARCHING_WOUNDED:
+                self.search()   # 0.5 most of the times but sometimes 200 (very few times)
 
-        elif self.state is self.Activity.GRASPING_WOUNDED or self.state is self.Activity.DROPPING_AT_RESCUE_CENTER:
-            self.grasper = 1
+            elif self.state is self.Activity.GRASPING_WOUNDED or self.state is self.Activity.DROPPING_AT_RESCUE_CENTER:
+                self.grasper = 1
 
-        elif self.state is self.Activity.SEARCHING_RESCUE_CENTER:
-            if self.following.distance(self.gps_val) < d:
-                if(len(self.paths)>1):
-                    self.paths = self.paths[1:]
-                self.following = MyDroneEval.ReachWrapper(self.paths[0])
-            self.grasper = 1
+            elif self.state is self.Activity.SEARCHING_RESCUE_CENTER:
+                if self.following.distance(self.gps_val) < d:
+                    if(len(self.paths)>1):
+                        self.paths = self.paths[1:]
+                    self.following = MyDroneEval.ReachWrapper(self.paths[0])
+                self.grasper = 1
 
-        # Once the attribute self.following is set let the commands be decided by
-        # our mechanical control function self.reach
-        self.reach()    # 0.2 stable
+            # Once the attribute self.following is set let the commands be decided by
+            # our mechanical control function self.reach
+            self.reach()    # 0.2 stable
+        end = time.time()
+        print(f"Time spent by 'self.track_goals': {(end-start)*10000} s")
 
         return {"forward": self.forward,
                 "lateral": self.lateral,
@@ -507,12 +522,13 @@ class MyDroneEval(DroneAbstract):
 
             
             # Check if the GPS is in a different cell than the last visited waypoint
-            current_cell = self.grid.get_cell_for_point(self.gps_val)
-            if getattr(self, 'last_visited_node', None) is not None:
-                last_visited_waypoint_cell = self.grid.get_cell_for_point(self.grid.last_visited_node.gps_coord)
-                if last_visited_waypoint_cell is not None and (current_cell['waypoint_x'] != last_visited_waypoint_cell['waypoint_x'] or current_cell['waypoint_y'] != last_visited_waypoint_cell['waypoint_y']):
+            current_cell, _ = self.grid.get_cell_for_point(self.gps_val)
+            if getattr(self.grid, 'last_visited_node', None) is not None:
+                last_visited_waypoint_cell, _ = self.grid.get_cell_for_point(self.grid.last_visited_node.gps_coord)
+                if last_visited_waypoint_cell is not None and (current_cell['waypoint_x'] != last_visited_waypoint_cell['waypoint_x'] or 
+                                                               current_cell['waypoint_y'] != last_visited_waypoint_cell['waypoint_y']):
                     # Update the last visited waypoint
-                    self.last_visited_node = self.grid.graph.get_node_by_coords((current_cell['waypoint_x'],current_cell['waypoint_y']))
+                    self.grid.last_visited_node = self.grid.graph.get_node_by_coords((current_cell['waypoint_x'],current_cell['waypoint_y']))
     
     def solve_collision(self):
         """If there is a collision start turning towards the most secure direction and then start accelerating"""
@@ -553,8 +569,11 @@ class MyDroneEval(DroneAbstract):
             guess = guess[~contained(self.grid.cells.values, guess)]
 
             if guess.size == 0:
-                current_cell = self.grid.get_cell_for_point(self.gps_val)
-                self.following = MyDroneEval.ReachWrapper(self.grid.cells.loc[current_cell+1, ["waypoint_x", "waypoint_y"]]) # PROBLEM
+                # _, next_cell = self.grid.get_cell_for_point(self.gps_val)
+                # if next_cell+1 < self.grid.cells.shape[0]:  # If we get back to the origin we cannot go anywhere else because we explored all the map
+                #     next_cell = next_cell + 1
+                next_cell = np.random.choice(self.grid.cells.shape[0])
+                self.following = MyDroneEval.ReachWrapper(self.grid.cells.loc[next_cell, ["waypoint_x", "waypoint_y"]]) # PROBLEM
             else:
                 next_destination = guess[np.random.choice(guess.shape[0])]
                 self.following = MyDroneEval.ReachWrapper(next_destination)
