@@ -47,7 +47,7 @@ def intercept_grid(cells, lims, gps_coord):
 
 def clean_material_following(rays, semantic):
     for s in semantic:
-        if s.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON:
+        if s.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON and not s.grasped:
             body_ray = (convert_angle(s.angle)+90)%180
             rays[body_ray-5:body_ray+5] = np.inf
     return rays
@@ -431,30 +431,30 @@ class MyDroneEval(DroneAbstract):
         # TRANSITIONS OF THE STATE MACHINE #    0.05 max
         ####################################
 
-        if self.state is self.Activity.SEARCHING_WOUNDED and self.found_wounded:
-            self.state = self.Activity.GRASPING_WOUNDED
+        if self.state is self.Activity.SEARCHING_WOUNDED and self.found_wounded and self.following.distance(self.gps_val) < d:
+            # self.state = self.Activity.GRASPING_WOUNDED
 
-        elif self.state is self.Activity.GRASPING_WOUNDED and self.base.grasper.grasped_entities:
+        # elif self.state is self.Activity.GRASPING_WOUNDED and self.following.distance(self.gps_val) < d:
             self.state = self.Activity.SEARCHING_RESCUE_CENTER
             self.found_wounded = False
             self.paths = astar(self.grid.graph, self.grid.last_visited_node, self.grid.rescue_point)
-            self.path_index = 0
+            # self.path_index = 0
             # print("paths", self.paths)
 
         # Should never happen
-        elif self.state is self.Activity.GRASPING_WOUNDED and not self.found_wounded:
-            self.state = self.Activity.SEARCHING_WOUNDED
+        # elif self.state is self.Activity.GRASPING_WOUNDED and not self.found_wounded:
+        #     self.state = self.Activity.SEARCHING_WOUNDED
 
-        elif self.state is self.Activity.SEARCHING_RESCUE_CENTER and self.found_rescue_center:
-            self.state = self.Activity.DROPPING_AT_RESCUE_CENTER
+        elif self.state is self.Activity.SEARCHING_RESCUE_CENTER and self.found_rescue_center and self.following.distance(self.gps_val) < d:
+        #     self.state = self.Activity.DROPPING_AT_RESCUE_CENTER
 
-        elif self.state is self.Activity.DROPPING_AT_RESCUE_CENTER and not self.base.grasper.grasped_entities:
+        # elif self.state is self.Activity.DROPPING_AT_RESCUE_CENTER and not self.base.grasper.grasped_entities:
             self.found_rescue_center = False
             self.state = self.Activity.SEARCHING_WOUNDED
 
         # Should never happen
-        elif self.state is self.Activity.DROPPING_AT_RESCUE_CENTER and not self.found_rescue_center:
-            self.state = self.Activity.SEARCHING_RESCUE_CENTER
+        # elif self.state is self.Activity.DROPPING_AT_RESCUE_CENTER and not self.found_rescue_center:
+        #     self.state = self.Activity.SEARCHING_RESCUE_CENTER
 
 
         #############################################################
@@ -465,13 +465,14 @@ class MyDroneEval(DroneAbstract):
         if clean_material_following(self.lidar_val, self.semantic_val)[90-22:90+22].min() < l:  # FOV: 90 degrees
             self.solve_collision()  # < 1
         else:
-            if self.state is self.Activity.SEARCHING_WOUNDED:
-                self.search()   # 0.5 most of the times but sometimes 200 (very few times)
+            if self.state is self.Activity.SEARCHING_WOUNDED and not self.found_wounded:
+                self.search()
+                self.grasper = 0
 
-            elif self.state is self.Activity.GRASPING_WOUNDED or self.state is self.Activity.DROPPING_AT_RESCUE_CENTER:
-                self.grasper = 1
+            # elif self.state is self.Activity.GRASPING_WOUNDED or self.state is self.Activity.DROPPING_AT_RESCUE_CENTER:
+            #     self.grasper = 1
 
-            elif self.state is self.Activity.SEARCHING_RESCUE_CENTER:
+            elif self.state is self.Activity.SEARCHING_RESCUE_CENTER and not self.found_rescue_center:
                 if self.following.distance(self.gps_val) < d:
                     if(len(self.paths)>1):
                         self.paths = self.paths[1:]
@@ -492,24 +493,29 @@ class MyDroneEval(DroneAbstract):
     def track_goals(self):
         """Tracks the positions of nearby bodies or rescue centers so that they can be reached without error."""
         bodies = [ray for ray in self.semantic_val if ray.entity_type == DroneSemanticSensor.TypeEntity.WOUNDED_PERSON and not ray.grasped]
-        if len(bodies) > 0 and self.state not in [MyDroneEval.Activity.SEARCHING_RESCUE_CENTER, MyDroneEval.Activity.DROPPING_AT_RESCUE_CENTER]:
-            positions = [(np.cos(body.angle + self.compass_val)*body.distance, np.sin(body.angle + self.compass_val)*body.distance) for body in bodies]
-            x, y = zip(*positions)
-            x, y = sum(x) / len(x), sum(y) / len(y)
+        if len(bodies) > 0 and self.state is MyDroneEval.Activity.SEARCHING_WOUNDED:
+            bodies = min(bodies, key=lambda r: r.distance)
+            x, y = np.cos(bodies.angle + self.compass_val)*bodies.distance, np.sin(bodies.angle + self.compass_val)*bodies.distance
+            # positions = [(np.cos(body.angle + self.compass_val)*body.distance, np.sin(body.angle + self.compass_val)*body.distance) for body in bodies]
+            # x, y = zip(*positions)
+            # x, y = sum(x) / len(x), sum(y) / len(y)
             self.following = MyDroneEval.ReachWrapper((self.gps_val[0]+x, self.gps_val[1]+y))
             self.found_wounded = True
             self.last_ts = 0
+        else: self.found_wounded = False
         
         rescue = [ray for ray in self.semantic_val if ray.entity_type == DroneSemanticSensor.TypeEntity.RESCUE_CENTER]
         if len(rescue) > 0 and self.state is MyDroneEval.Activity.SEARCHING_RESCUE_CENTER:
-            positions = [(np.cos(r.angle + self.compass_val)*r.distance, np.sin(r.angle + self.compass_val)*r.distance) for r in rescue]
-            x, y = zip(*positions)
-            x, y = sum(x) / len(x), sum(y) / len(y)
-            self.paths.append(MyDroneEval.ReachWrapper((self.gps_val[0]+x, self.gps_val[1]+y)))
-            self.state = MyDroneEval.Activity.DROPPING_AT_RESCUE_CENTER
+            rescue = min(rescue, key=lambda r: r.distance)
+            x, y = np.cos(rescue.angle + self.compass_val)*rescue.distance, np.sin(rescue.angle + self.compass_val)*rescue.distance
+            # positions = [(np.cos(r.angle + self.compass_val)*r.distance, np.sin(r.angle + self.compass_val)*r.distance) for r in rescue]
+            # x, y = zip(*positions)
+            # x, y = sum(x) / len(x), sum(y) / len(y)
+            # self.paths.append(MyDroneEval.ReachWrapper((self.gps_val[0]+x, self.gps_val[1]+y)))
+            self.following = MyDroneEval.ReachWrapper((self.gps_val[0]+x, self.gps_val[1]+y))
+            # self.state = MyDroneEval.Activity.DROPPING_AT_RESCUE_CENTER
             self.found_rescue_center = True
-        else:
-            self.found_rescue_center = False
+        else: self.found_rescue_center = False
 
     def update_grid(self):
         """Performs the update of the grid adding a new cell if we have to discover another portion of the map
