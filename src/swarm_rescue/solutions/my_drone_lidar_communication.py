@@ -26,6 +26,10 @@ class MyDroneLidarCommunication(DroneAbstract):
         msg_data = (self.identifier,
                     (self.measured_gps_position(), self.measured_compass_angle()))
         return msg_data
+    """
+    This method defines the message that the drone will send and receive from other surrounding drones, 
+    containing its identifier, GPS position, and compass angle.
+    """
 
     def control(self):
         """
