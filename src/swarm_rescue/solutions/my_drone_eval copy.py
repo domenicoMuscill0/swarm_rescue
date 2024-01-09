@@ -724,4 +724,4 @@ class MyDroneEval(DroneAbstract):
     def validate_commands(self):
         self.forward = np.clip(self.forward, a_min=-1, a_max=1)
         self.lateral = np.clip(self.lateral, a_min=-1, a_max=1)
-        self.rotation = np.clip(self.rotation, a_min=-1, a_max=1)
+        self.rotplkation = np.clip(self.rotation, a_min=-1, a_max=1)
