@@ -1,15 +1,20 @@
 # /usr/bin/env python3
 import random
-from enum import Enum
 import time
-from typing import Optional
 import numpy as np
 import pandas as pd
+import math
+import heapq
+import numba as nb
+from copy import deepcopy
+from typing import Optional
+from enum import Enum
 
 from spg_overlay.entities.drone_abstract import DroneAbstract
 from spg_overlay.entities.drone_distance_sensors import DroneSemanticSensor
-import heapq
-import numba as nb
+from spg_overlay.utils.misc_data import MiscData
+from spg_overlay.utils.utils import normalize_angle, sign
+
 
 
 d = 40
@@ -445,8 +450,11 @@ class MyDroneEval(DroneAbstract):
             return np.sqrt((self.x - x)**2 + (self.y - y)**2)
     
     def __init__(self,
-                 identifier: Optional[int] = None, **kwargs):
+                 identifier: Optional[int] = None,
+                 misc_data: Optional[MiscData] = None,
+                 **kwargs):
         super().__init__(identifier=identifier,
+                         misc_data=misc_data,
                          display_lidar_graph=False,
                          **kwargs)
         random.seed(identifier)
@@ -480,13 +488,20 @@ class MyDroneEval(DroneAbstract):
 
     def define_message_for_all(self):
         """
-        Define the communication system among drones
+        Define the message, the drone will send to and receive from other surrounding drones.
         """
-        return self.msg_data
+        msg_data = (self.identifier,
+                    (self.measured_gps_position(), self.measured_compass_angle()))
+        return msg_data
+    """
+    This method defines the message that the drone will send and receive from other surrounding drones, 
+    containing its identifier, GPS position, and compass angle.
+    """
     
     def process_messages(self):
         # To add the logic for sending and receiving local grid cells for non-common drones
         messages = self.communicator.received_messages
+        
         for msg in messages:
             if len(msg["destruction zones"] > 0): 
                 for dzone in msg["destruction zones"]:
@@ -496,7 +511,119 @@ class MyDroneEval(DroneAbstract):
                 for nczone in msg["no-comm zones"]:
                     if nczone not in self.grid:
                         self.grid += nczone
-            
+    
+    def process_communication_sensor(self):
+        found_drone = False
+        command_comm = {"forward": 0.0,
+                        "lateral": 0.0,
+                        "rotation": 0.0}
+        if self.communicator:
+            received_messages = self.communicator.received_messages
+            print(f"receive messages {received_messages}\n")
+            nearest_drone_coordinate1 = (
+                self.measured_gps_position(), self.measured_compass_angle())
+            nearest_drone_coordinate2 = deepcopy(nearest_drone_coordinate1)
+            (nearest_position1, nearest_angle1) = nearest_drone_coordinate1
+            (nearest_position2, nearest_angle2) = nearest_drone_coordinate2
+
+            min_dist1 = 10000
+            min_dist2 = 10000
+            diff_angle = 0
+
+            # Search the two nearest drones around
+            for msg in received_messages:
+                message = msg[1]
+                coordinate = message[1]
+                (other_position, other_angle) = coordinate
+
+                dx = other_position[0] - self.measured_gps_position()[0]
+                dy = other_position[1] - self.measured_gps_position()[1]
+                distance = math.sqrt(dx ** 2 + dy ** 2)
+
+                # if another drone is near
+                if distance < min_dist1:
+                    min_dist2 = min_dist1
+                    min_dist1 = distance
+                    nearest_drone_coordinate2 = nearest_drone_coordinate1
+                    nearest_drone_coordinate1 = coordinate
+                    found_drone = True
+                elif distance < min_dist2 and distance != min_dist1:
+                    min_dist2 = distance
+                    nearest_drone_coordinate2 = coordinate
+
+            if not found_drone:
+                return found_drone, command_comm
+
+            # If we found at least 2 drones
+            if found_drone and len(received_messages) >= 2:
+                (nearest_position1, nearest_angle1) = nearest_drone_coordinate1
+                (nearest_position2, nearest_angle2) = nearest_drone_coordinate2
+                diff_angle1 = normalize_angle(
+                    nearest_angle1 - self.measured_compass_angle())
+                diff_angle2 = normalize_angle(
+                    nearest_angle2 - self.measured_compass_angle())
+                # The mean of 2 angles can be seen as the angle of a vector, which
+                # is the sum of the two unit vectors formed by the 2 angles.
+                diff_angle = math.atan2(0.5 * math.sin(diff_angle1) + 0.5 * math.sin(diff_angle2),
+                                        0.5 * math.cos(diff_angle1) + 0.5 * math.cos(diff_angle2))
+
+            # If we found only 1 drone
+            elif found_drone and len(received_messages) == 1:
+                (nearest_position1, nearest_angle1) = nearest_drone_coordinate1
+                diff_angle1 = normalize_angle(
+                    nearest_angle1 - self.measured_compass_angle())
+                diff_angle = diff_angle1
+
+            # if you are far away, you get closer
+            # heading < 0: at left
+            # heading > 0: at right
+            # base.angular_vel_controller : -1:left, 1:right
+            # we are trying to align : diff_angle -> 0
+            command_comm["rotation"] = sign(diff_angle)
+
+            # Desired distance between drones
+            desired_dist = 60
+
+            d1x = nearest_position1[0] - self.measured_gps_position()[0]
+            d1y = nearest_position1[1] - self.measured_gps_position()[1]
+            distance1 = math.sqrt(d1x ** 2 + d1y ** 2)
+
+            d1 = distance1 - desired_dist
+            # We use a logistic function. -1 < intensity1(d1) < 1 and  intensity1(0) = 0
+            # intensity1(d1) approaches 1 (resp. -1) as d1 approaches +inf (resp. -inf)
+            intensity1 = 2 / (1 + math.exp(-d1 / (desired_dist * 0.5))) - 1
+
+            direction1 = math.atan2(d1y, d1x)
+            heading1 = normalize_angle(direction1 - self.measured_compass_angle())
+
+            # The drone will slide in the direction of heading
+            longi1 = intensity1 * math.cos(heading1)
+            lat1 = intensity1 * math.sin(heading1)
+
+            # If we found only 1 drone
+            if found_drone and len(received_messages) == 1:
+                command_comm["forward"] = longi1
+                command_comm["lateral"] = lat1
+
+            # If we found at least 2 drones
+            elif found_drone and len(received_messages) >= 2:
+                d2x = nearest_position2[0] - self.measured_gps_position()[0]
+                d2y = nearest_position2[1] - self.measured_gps_position()[1]
+                distance2 = math.sqrt(d2x ** 2 + d2y ** 2)
+
+                d2 = distance2 - desired_dist
+                intensity2 = 2 / (1 + math.exp(-d2 / (desired_dist * 0.5))) - 1
+
+                direction2 = math.atan2(d2y, d2x)
+                heading2 = normalize_angle(direction2 - self.measured_compass_angle())
+
+                longi2 = intensity2 * math.cos(heading2)
+                lat2 = intensity2 * math.sin(heading2)
+
+                command_comm["forward"] = 0.5 * (longi1 + longi2)
+                command_comm["lateral"] = 0.5 * (lat1 + lat2)
+
+        return found_drone, command_comm
 
     def control(self):
         start = time.time()
@@ -519,6 +646,8 @@ class MyDroneEval(DroneAbstract):
         ####################################
         # TRANSITIONS OF THE STATE MACHINE #    0.05 max
         ####################################
+
+        
 
         if self.state is self.Activity.SEARCHING_WOUNDED and self.found_wounded and self.following.distance(self.gps_val) < d:
             self.state = self.Activity.SEARCHING_RESCUE_CENTER
@@ -566,6 +695,13 @@ class MyDroneEval(DroneAbstract):
                 print(f"Time spent by 'control': {(end-start)*10000} s")
             
         # print(self.margin)
+        # Here add the command from the communicate part
+        found, command_comm = self.process_communication_sensor()
+        if found:
+            self.forward += 0.1*command_comm["forward"]
+            self.lateral += 0.1*command_comm["lateral"]
+            self.rotation += 0.1*command_comm["rotation"]
+    
         self.validate_commands()
         return {"forward": self.forward,
                 "lateral": self.lateral,
