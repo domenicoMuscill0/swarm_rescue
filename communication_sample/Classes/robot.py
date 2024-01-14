@@ -118,3 +118,66 @@ def RightWall(self, maze):
     elif self.direction == 3:  # down
         return self.RightCell(maze).rightWall
 
+def TurnLeft(self):
+    self.direction = (self.direction - 1)%4
+
+def TurnRight(self):
+    self.direction = (self.direction + 1)%4
+
+def ForwardOneCell(self, maze, speed = 2):
+    front_cell = self.FrontCell(maze)
+    self.change_pos_to(front_Cell)
+
+def change_pos_to(self, cell):
+    self.RowInd = cell.Row
+    self.ColInd = cell.Col
+    self.Xpos = cell.xpos 
+    self.Ypos = cell.ypos 
+
+def initializePos(self, maze, initial_pos):
+    random.seed(datetime.now())
+    if initial_pos is None:
+        first_cell = maze.generate_random_cell()
+        while first_cell == self.goal_cell:
+            first_cell = maze.generate_random_cell()
+    else: first_cell = initial_pos
+    if first_cell.color != 0:
+        first_cell = maze.generate_random_cell()
+    self.change_pos_to(first_cell)
+    self.direction = random.randint(0, 3)
+    self.CurrentCell(maze).set_color(self.color)
+    self.CurrentCell(maze).set_OC_flag(True)
+    self.add_to_visited_cell(self.CurrentCell(maze))
+
+def add_to_visited_cell(self, next_Cell):
+    self.visited[next_Cell.id] += 1
+
+def explore(self, maze, global_maze, robot_cam, lock):
+    self.AssignWall(maze, global_maze, robot_cam)
+    next_Cell = self.Choose_direction(maze)
+    self.Move(maze, next_Cell)
+
+def Move(self, maze, next_Cell):
+    self.overall_counter += 1
+    if next_Cell == self.CurrentCell(maze):
+        return
+
+    prevCell = self.CurrentCell(maze)
+    next_Cell.OC_flag = True
+
+    if next_Cell == self.LeftCell(maze):
+        self.TurnLeft()
+    elif next_Cell == self.RightCell(maze):
+        self.TurnRight()
+    elif next_Cell == self.FrontCell(maze):
+        pass
+    elif next_Cell == self.BackCell(maze):
+        self.TurnLeft()
+        self.TurnLeft()
+
+    self.color_assign(maze, next_Cell)
+    self.ForwardOneCell(maze)
+
+    prevCell.OC_flag = False
+    self.add_to_visited_cell(next_Cell)
+
