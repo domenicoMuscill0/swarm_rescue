@@ -6,7 +6,6 @@ import random
 import time
 import threading
 import numpy as np
-from cv_bridge import CvBridge 
 import cv2 as cv
 import pickle
 

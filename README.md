@@ -25,3 +25,4 @@ The thing i am more curious about is the effect of sharing informations about th
 
 
 Here I first create a model to deal with this situation.
+Which is written in the `communication_sample` folder.
