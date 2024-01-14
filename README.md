@@ -22,3 +22,6 @@ This will make the estimate on the position benefit from the presence of other d
 The thing i am more curious about is the effect of sharing informations about the grid/graph. I see that most of the times the drones spend a lot of time searching places in which others passed by some time before, so we could achieve better rescue speed by doing so
 
  Also we have a problem when a drone is carrying a body but other drones step on its path, blocking him from delivering the body. I think it would be optimal if we share with the communication system the coordinates of the self.following attribute of the "ambulance" drone so that all the ones that will receive it will try to stay as far as possible from that segment
+
+
+Here I first create a model to deal with this situation.
