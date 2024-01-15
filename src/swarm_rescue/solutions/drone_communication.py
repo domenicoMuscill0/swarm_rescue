@@ -1,4 +1,7 @@
 # /usr/bin/env python3
+
+
+
 import random
 import time
 import numpy as np
@@ -424,7 +427,7 @@ def gomperz(x, a=0.008, b=20, rate=0.1) -> float:
     return 1 - a*np.exp(-np.exp(-rate*(x-b)))
 
 
-class MyDroneEval(DroneAbstract):
+class Drone_communication(DroneAbstract):
     class Activity(Enum):
         """
         All the states of the drone as a state machine
