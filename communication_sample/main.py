@@ -10,14 +10,12 @@ import cv2 as cv
 import pickle
 
 # Here is the idea of building the global map
-def building_global_maze(dim):
+def build_global_maze(dim):
     global_maze = Maze(dim, dim)
     global_maze.build_maze()
-    File = open("mmm.pickle",'wb')
-    File.truncate()
-    pickle.dump(global_maze, File)
-    File.close()
-    return global_maze 
+    with open("mmm.pickle",'wb+') as File:
+        pickle.dump(global_maze, File)
+    return global_maze
 
 def build_robots(k, dim):
     maze = Maze(dim, dim)
@@ -25,16 +23,23 @@ def build_robots(k, dim):
     goal_cell = maze.generate_random_cell()
     robots = []
     for i in range(k):
-        robots.append(Robot(10+i, colors[i], maze, goal_cell))
+        robots.append(Robot(10+i, i, maze, goal_cell))
     maze.add_robots(robots)
     return robots, maze
 
 # I haven't figure out what is the pickle? What does it mean?
 def import_global_maze():
-    File = open("mmm.pickle",'rb')
-    global_maze = pickle.load(File)
-    File.close()
-    return global_maze
+    try:
+        with open("mmm.pickle",'rb') as File:
+            global_maze = pickle.load(File)
+        return global_maze
+    except EOFError:
+        print("The pickle file is empty or corrupted.")
+        return None
+    except FileNotFoundError:
+        print("The pickle file does not exist.")
+        return None
+
 
 def build_cam():
     robot_cam = Detector(maze, "robots", lock, robots)
@@ -64,9 +69,8 @@ def main(global_maze):
         t[i].join()
 
 if __name__ == '__main__':
-    infile = open("dict", "rb")
-    dic = pickle.load(infile)
-    infile.close()
+    # initialize an empty nested dictionary
+    dic = {}
     for dim in [10, 15, 17, 20, 25]:
         for k in [1, 3, 5, 7]:
             global_maze = build_global_maze(dim)
@@ -80,7 +84,7 @@ if __name__ == '__main__':
                 max_phase_one = max(robot.phase_one_counter, max_phase_one)
                 max_overall = max(robot.overall_counter, max_overall)
             dic[k][dim].append((max_phase_one, max_overall))
-            outfile = open("dict", "web")
+            outfile = open("dict", "wb")
             pickle.dump(dic, outfile)
             outfile.close()
             
